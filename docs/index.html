@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>持股雷達</title>
+<meta name="theme-color" content="#14161a">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="持股雷達">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="icon" href="icon-192.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <a href="#/" class="brand">持股雷達</a>
+  <span id="updated" class="muted small"></span>
+</header>
+<main id="app"><div class="center muted">載入中…</div></main>
+<nav class="tabbar" id="tabbar" hidden>
+  <a href="#/" data-tab="home"><span>📊</span>總覽</a>
+  <a href="#/events" data-tab="events"><span>📅</span>行事曆</a>
+  <a href="#/settings" data-tab="settings"><span>⚙️</span>設定</a>
+</nav>
+<script src="config.js"></script>
+<script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

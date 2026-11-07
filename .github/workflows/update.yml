@@ -1,0 +1,50 @@
+name: update
+
+on:
+  schedule:
+    - cron: "30 7 * * 1-5"   # 台灣 15:30（週一～五盤後）：股價、技術分析
+    - cron: "0 0 * * *"      # 台灣 08:00：新聞、事件
+    - cron: "0 12 * * *"     # 台灣 20:00：新聞、事件（每 12 小時）
+  workflow_dispatch: {}      # App 內「立即更新」
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: update
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: 分析並推播
+        env:
+          APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
+          VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
+          VAPID_SUBJECT: ${{ secrets.VAPID_SUBJECT }}
+          FINMIND_TOKEN: ${{ secrets.FINMIND_TOKEN }}
+        run: python backend/main.py
+      - name: 儲存結果
+        run: |
+          git config user.name "stock-radar-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add docs/data config
+          git diff --cached --quiet || git commit -m "資料更新 $(TZ=Asia/Taipei date '+%Y-%m-%d %H:%M')"
+          git pull --rebase -X theirs origin main || true
+          git push
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+      - uses: actions/deploy-pages@v4
