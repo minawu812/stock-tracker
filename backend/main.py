@@ -22,6 +22,7 @@ import fundamentals as fu  # noqa: E402
 import news as nw  # noqa: E402
 import notify  # noqa: E402
 import sources as src  # noqa: E402
+import stocklist  # noqa: E402
 from crypto_box import load_encrypted, save_encrypted  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -157,6 +158,7 @@ def main():
     settings = portfolio.setdefault("settings", {"stop_pct": 8, "notify_days_before": 7})
     today = src.now_tw().date()
     twse_ex = src.twse_ex_rights()
+    stocklist.refresh_if_old()
 
     stocks = []
     for st in portfolio.get("stocks", []):

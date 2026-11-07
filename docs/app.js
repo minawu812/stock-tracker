@@ -489,16 +489,57 @@ function drawCharts(t) {
   CHARTS.push({ remove: () => ro.disconnect() });
 }
 
+
+// ---------- 股票代號自動帶出名稱 ----------
+let STOCKS = null, STOCK_MAP = {};
+async function loadStockList() {
+  if (STOCKS) return;
+  try {
+    const j = await (await fetch('stocklist.json')).json();
+    STOCKS = j.stocks; STOCKS.forEach(x => STOCK_MAP[x[0]] = x);
+  } catch { STOCKS = []; }
+}
+function stockHint(code) {
+  if (!code) return '';
+  const x = STOCK_MAP[String(code).toUpperCase()];
+  if (x) return `✓ ${esc(x[1])}・${x[2]}・${esc(x[3])}`;
+  return STOCKS && /^\d{4,6}[A-Z]?$/.test(code) ? '<span class="down">找不到這個代號，請確認</span>' : '';
+}
+function suggest(inp, pf) {
+  const row = inp.closest('.hold-row'), i = +row.dataset.i, box = row.querySelector('.sugg');
+  const q = inp.value.trim().toUpperCase();
+  const fill = x => {
+    inp.value = x[0];
+    pf.stocks[i].code = x[0]; pf.stocks[i].name = x[1];
+    row.querySelector('[data-k=name]').value = x[1];
+    row.querySelector('.hint').innerHTML = stockHint(x[0]);
+    const dup = pf.stocks.some((s, j) => j !== i && s.code === x[0]);
+    if (dup) row.querySelector('.hint').innerHTML += ' <span class="down">（清單裡已經有這檔）</span>';
+  };
+  const exact = STOCK_MAP[q];
+  if (exact) fill(exact); else row.querySelector('.hint').innerHTML = stockHint(q);
+  const list = !q || !STOCKS ? [] : STOCKS.filter(x => x[0].startsWith(q) || (!/^\d/.test(q) && x[1].toUpperCase().includes(q))).slice(0, 8);
+  if (exact && list.length <= 1) { box.hidden = true; return; }
+  box.innerHTML = list.map(x => `<button type="button" data-c="${x[0]}"><b>${x[0]}</b> ${esc(x[1])} <small class="muted">${x[2]}・${esc(x[3])}</small></button>`).join('');
+  box.hidden = !list.length;
+  box.querySelectorAll('button').forEach(b => b.onmousedown = b.ontouchstart = e => {
+    e.preventDefault(); fill(STOCK_MAP[b.dataset.c]); box.hidden = true;
+    row.querySelector('[data-k=cost]').focus();
+  });
+}
+
 // ---------- 設定 ----------
 function viewSettings() {
   const pf = structuredClone(REPORT.portfolio);
   const set = pf.settings || (pf.settings = { stop_pct: 8, notify_days_before: 7 });
   const rows = () => pf.stocks.map((s, i) => `<div class="hold-row" data-i="${i}">
-      <div><label>代號</label><input data-k="code" value="${esc(s.code)}" inputmode="numeric"></div>
+      <div><label>代號或名稱</label><input data-k="code" value="${esc(s.code)}" autocomplete="off" autocorrect="off" spellcheck="false" placeholder="例：2330 或 台積"></div>
       <div><label>名稱</label><input data-k="name" value="${esc(s.name || '')}"></div>
       <div><label>平均成本</label><input data-k="cost" value="${s.cost ?? ''}" inputmode="decimal"></div>
       <div><label>股數</label><input data-k="shares" value="${s.shares ?? ''}" inputmode="numeric"></div>
-      <button class="danger" data-del="${i}">刪除</button></div>`).join('');
+      <button class="danger" data-del="${i}">刪除</button>
+      <div class="hint small muted">${stockHint(s.code)}</div>
+      <div class="sugg" hidden></div></div>`).join('');
   const pushState = 'Notification' in window ? Notification.permission : 'unsupported';
   const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone;
   app.innerHTML = `
@@ -532,7 +573,11 @@ function viewSettings() {
     document.querySelectorAll('.hold-row input').forEach(inp => inp.oninput = () => {
       const i = +inp.closest('.hold-row').dataset.i, k = inp.dataset.k;
       pf.stocks[i][k] = (k === 'cost' || k === 'shares') ? (inp.value === '' ? null : Number(inp.value)) : inp.value.trim();
+      if (k === 'code') suggest(inp, pf);
     });
+    document.querySelectorAll('.hold-row [data-k=code]').forEach(inp => inp.onblur = () => setTimeout(() => {
+      const box = inp.closest('.hold-row')?.querySelector('.sugg'); if (box) box.hidden = true;
+    }, 200));
     document.querySelectorAll('[data-del]').forEach(b => b.onclick = () => {
       const i = +b.dataset.del;
       if (b.dataset.confirm) { pf.stocks.splice(i, 1); $('#rows').innerHTML = rows(); bind(); }
@@ -540,7 +585,8 @@ function viewSettings() {
     });
   };
   bind();
-  $('#add').onclick = () => { pf.stocks.push({ code: '', name: '', cost: null, shares: 0 }); $('#rows').innerHTML = rows(); bind(); };
+  $('#add').onclick = () => { pf.stocks.push({ code: '', name: '', cost: null, shares: 0 }); $('#rows').innerHTML = rows(); bind(); $('#rows .hold-row:last-child [data-k=code]').focus(); };
+  loadStockList().then(() => document.querySelectorAll('.hold-row').forEach(r => { r.querySelector('.hint').innerHTML = stockHint(pf.stocks[+r.dataset.i]?.code); }));
   $('#save').onclick = async () => {
     if (needGh()) return;
     pf.stocks = pf.stocks.filter(s => /^\d{4,6}[A-Z]?$/.test(s.code));

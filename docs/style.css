@@ -190,3 +190,12 @@ details summary { cursor: pointer; color: var(--text2); font-size: 13px; }
 }
 .stabs button { flex: 1; border: 0; background: transparent; padding: 8px 2px; font-size: 14px; color: var(--text2); border-radius: 9px; }
 .stabs button.on { background: var(--accent); color: #fff; }
+.hold-row .hint { grid-column: 1 / -1; margin-top: -2px; min-height: 0; }
+.hold-row .hint:empty { display: none; }
+.sugg { grid-column: 1 / -1; display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--card); margin-top: -2px; }
+.sugg button { border: 0; border-bottom: 1px solid var(--line); border-radius: 0; text-align: left; font-weight: 400; padding: 10px 12px; background: var(--card); }
+.sugg button:last-child { border-bottom: 0; }
+.sugg button:active { background: var(--bg); }
+.hold-row { padding-bottom: 10px; border-bottom: 1px dashed var(--line); }
+.hold-row > :nth-child(n+3) { order: 2; }
+.hold-row > .hint, .hold-row > .sugg { order: 1; }
