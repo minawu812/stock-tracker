@@ -179,7 +179,9 @@ def main():
     if len(alive) != len(subs):
         save_encrypted(SUBS, alive, pw)
     notify.mac_local(msgs)
-    save_encrypted(STATE, state, pw)
+    # 雲端沒有任何裝置訂閱時不記錄「已通知」，等開啟通知後仍會收到
+    if alive or not os.environ.get("CI"):
+        save_encrypted(STATE, state, pw)
     print("完成：%d 檔股票，%d 則新提醒" % (len(stocks), len(msgs)))
     for m in msgs:
         print("-", m["title"], "\n ", m["body"].replace("\n", "\n  "))
