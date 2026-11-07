@@ -160,6 +160,8 @@ function stockCard(s) {
     ${p ? `<div class="row" style="margin-top:6px"><span class="small muted">損益</span>
       <span class="num ${cls(p.gross)}" style="font-weight:700">${sign(p.gross)}${fmt0(p.gross)}（${pct(p.pct)}）</span></div>` : ''}
     ${top ? `<div class="meta">${ICON[top.level]} ${esc(top.title)}</div>` : ''}
+    ${s.chips ? `<div class="meta">🏦 ${esc(s.chips.verdict)}｜${esc(s.chips.verdict_note)}</div>` : ''}
+    <div class="go">查看分析 ›</div>
     ${s.errors?.length ? `<div class="meta down">⚠️ ${esc(s.errors[0])}</div>` : ''}
   </a>`;
 }
@@ -179,25 +181,14 @@ function viewEvents() {
     <p class="muted small">財報日期為法定公布截止日（Q1 5/15、Q2 8/14、Q3 11/14、年報 3/31），公司可能提早公布。事件前 7 天與前 1 天會推播提醒。</p></div>`;
 }
 
+let STOCK_TAB = sessionStorage.getItem('tab') || 'trend';
+const STOCK_TABS = [['trend', '走勢訊號'], ['chips', '法人籌碼'], ['fin', '財報估值'], ['news', '新聞事件']];
 function viewStock(code) {
   const s = REPORT.stocks.find(x => x.code === code);
   if (!s) { app.innerHTML = '<p class="center muted">找不到這檔股票</p>'; return; }
   const t = s.tech || {}, p = t.pnl, v = s.valuation, f = s.financials, rv = s.revenue, c = s.competitiveness;
-  app.innerHTML = `
-  <div class="card">
-    <div class="row"><div><span style="font-size:20px;font-weight:800">${esc(s.name)}</span> <span class="muted">${s.code}</span></div>${trendBadge(t.trend || '—')}</div>
-    <div class="row" style="margin-top:6px;align-items:flex-end">
-      <div><div class="stat"><div class="value big num ${cls(t.chg)}">${fmt(t.close)}</div></div>
-        <div class="num ${cls(t.chg)}">${sign(t.chg)}${fmt(t.chg)}（${pct(t.chg_pct)}）</div></div>
-      <div class="small muted" style="text-align:right">${t.date || ''} 收盤<br>成交 ${fmt0(t.volume)} 張</div>
-    </div>
-    ${p ? `<div class="grid3" style="margin-top:12px">
-      <div class="stat"><div class="label">持有</div><div class="num">${fmt0(s.shares)} 股</div></div>
-      <div class="stat"><div class="label">成本</div><div class="num">${fmt(s.cost)}</div></div>
-      <div class="stat"><div class="label">損益</div><div class="num ${cls(p.gross)}" style="font-weight:700">${sign(p.gross)}${fmt0(p.gross)}<br>${pct(p.pct)}</div></div>
-    </div>` : ''}
-  </div>
-
+  const panes = {
+    trend: () => `
   <div class="card"><h3>走勢圖 <span class="muted small">日K・近一年</span></h3>
     <div class="legend" id="lg"></div>
     <div class="chart" id="ck"></div>
@@ -205,12 +196,10 @@ function viewStock(code) {
     <div class="legend" id="lg2"></div>
     <div class="chart sub" id="cs"></div>
   </div>
-
   <div class="card"><h3>買賣訊號</h3>
     ${(t.signals || []).length ? t.signals.map(x => `<div class="sig ${x.level}"><span class="ic">${ICON[x.level]}</span><div><div class="t">${esc(x.title)}</div><div class="d">${esc(x.detail)}</div></div></div>`).join('') : '<p class="muted">今日無特別訊號</p>'}
     <p class="small muted" style="margin:4px 0 0">趨勢判斷：${esc(t.trend_note || '')}｜均線：${esc(t.ma_state || '')}</p>
   </div>
-
   <div class="card"><h3>關鍵價位</h3>
     <dl class="levels">
       ${t.stop_price ? `<dt>停損參考</dt><dd class="down" style="font-weight:700">${fmt(t.stop_price)} <span class="muted small">（前低 ${fmt(t.last_low)} 或成本 -${fmt0(t.stop_pct)}%，取較高者）</span></dd>` : ''}
@@ -224,7 +213,13 @@ function viewStock(code) {
     <h3 style="margin-top:14px">順勢做多檢查表</h3>
     <ul class="check">${(t.checklist || []).map(x => `<li>${x.ok ? '✅' : '⬜️'} ${esc(x.name)}</li>`).join('')}</ul>
   </div>
-
+  <div class="card"><h3>每日行情 <span class="muted small">近 20 個交易日</span></h3>
+    <div class="tbl-wrap"><table><tr><th>日期</th><th>開盤</th><th>最高</th><th>最低</th><th>收盤</th><th>漲跌</th><th>張數</th></tr>
+    ${(() => { const b = t.series?.bars || []; return b.slice(-20).map((x, i, a) => { const pi = b.length - a.length + i - 1; const ch = pi >= 0 ? x[4] - b[pi][4] : 0;
+      return `<tr><td>${x[0].slice(5)}</td><td>${fmt(x[1])}</td><td>${fmt(x[2])}</td><td>${fmt(x[3])}</td><td class="${cls(ch)}"><b>${fmt(x[4])}</b></td><td class="${cls(ch)}">${sign(ch)}${fmt(ch)}</td><td>${fmt0(x[5])}</td></tr>`; }).reverse().join(''); })()}
+    </table></div></div>`,
+    chips: () => chipsPane(s),
+    fin: () => `
   ${v ? `<div class="card"><h3>EPS 與本益比估值</h3>
     <div class="row wrap"><div><div class="verdict ${v.status === '便宜' || v.status === '合理偏低' ? 'up' : v.status === '偏貴' || v.status === '昂貴' ? 'down' : ''}">${esc(v.status || '—')}</div>
       <div class="small muted">${esc(v.status_note || '')}</div></div></div>
@@ -274,8 +269,8 @@ function viewStock(code) {
   ${rv ? `<div class="card"><h3>月營收 <span class="muted small">今年累計年增 ${pct(rv.cum_yoy, 1)}</span></h3>
     <div class="tbl-wrap"><table><tr><th>月份</th><th>營收</th><th>月增</th><th>年增</th></tr>
     ${rv.months.slice(-6).reverse().map(m => `<tr><td>${m.ym}</td><td>${money(m.revenue)}</td><td class="${cls(m.mom)}">${pct(m.mom, 1)}</td><td class="${cls(m.yoy)}">${pct(m.yoy, 1)}</td></tr>`).join('')}
-    </table></div></div>` : ''}
-
+    </table></div></div>` : ''}` || '<p class="center muted">尚無財報資料</p>',
+    news: () => `
   ${c ? `<div class="card"><h3>公司競爭力評估</h3>
     <div class="row"><div class="verdict">${esc(c.label)}</div><div class="muted small">${c.score} / 5</div></div>
     <div class="meter">${[1, 2, 3, 4, 5].map(i => `<i class="${i <= c.score ? 'on' : ''}"></i>`).join('')}</div>
@@ -292,16 +287,120 @@ function viewStock(code) {
     <details><summary>過濾掉的新聞統計</summary><p class="small muted">${Object.entries(s.news_dropped || {}).map(([k, n]) => `${esc(k)} ${n} 則`).join('、')}</p></details>
   </div>
 
-  ${s.events?.length ? `<div class="card"><h3>近期事件</h3>${s.events.map(e => eventRow({ ...e, name: '', code: s.code })).join('')}</div>` : ''}
-
-  <div class="card"><h3>每日行情 <span class="muted small">近 20 個交易日</span></h3>
-    <div class="tbl-wrap"><table><tr><th>日期</th><th>開盤</th><th>最高</th><th>最低</th><th>收盤</th><th>漲跌</th><th>張數</th></tr>
-    ${(() => { const b = t.series?.bars || []; return b.slice(-20).map((x, i, a) => { const pi = b.length - a.length + i - 1; const ch = pi >= 0 ? x[4] - b[pi][4] : 0;
-      return `<tr><td>${x[0].slice(5)}</td><td>${fmt(x[1])}</td><td>${fmt(x[2])}</td><td>${fmt(x[3])}</td><td class="${cls(ch)}"><b>${fmt(x[4])}</b></td><td class="${cls(ch)}">${sign(ch)}${fmt(ch)}</td><td>${fmt0(x[5])}</td></tr>`; }).reverse().join(''); })()}
-    </table></div></div>
-  <p class="disclaimer">技術與估值分析僅供參考，不構成投資建議。</p>`;
-  drawCharts(t);
+  ${s.events?.length ? `<div class="card"><h3>近期事件</h3>${s.events.map(e => eventRow({ ...e, name: '', code: s.code })).join('')}</div>` : ''}`,
+  };
+  app.innerHTML = `
+  <div class="switcher">${REPORT.stocks.map(x => `<a href="#/stock/${x.code}" data-swap class="${x.code === code ? 'on' : ''}">${esc(x.name)} <small class="${cls(x.tech?.chg)}">${pct(x.tech?.chg_pct, 1)}</small></a>`).join('')}</div>
+  <div class="card">
+    <div class="row"><div><span style="font-size:20px;font-weight:800">${esc(s.name)}</span> <span class="muted">${s.code}</span></div>${trendBadge(t.trend || '—')}</div>
+    <div class="row" style="margin-top:6px;align-items:flex-end">
+      <div><div class="stat"><div class="value big num ${cls(t.chg)}">${fmt(t.close)}</div></div>
+        <div class="num ${cls(t.chg)}">${sign(t.chg)}${fmt(t.chg)}（${pct(t.chg_pct)}）</div></div>
+      <div class="small muted" style="text-align:right">${t.date || ''} 收盤<br>成交 ${fmt0(t.volume)} 張</div>
+    </div>
+    ${p ? `<div class="grid3" style="margin-top:12px">
+      <div class="stat"><div class="label">持有</div><div class="num">${fmt0(s.shares)} 股</div></div>
+      <div class="stat"><div class="label">成本</div><div class="num">${fmt(s.cost)}</div></div>
+      <div class="stat"><div class="label">損益</div><div class="num ${cls(p.gross)}" style="font-weight:700">${sign(p.gross)}${fmt0(p.gross)}<br>${pct(p.pct)}</div></div>
+    </div>` : ''}
+  </div>
+  <div class="stabs">${STOCK_TABS.map(([k, n]) => `<button data-tab="${k}">${n}</button>`).join('')}</div>
+  <div id="tabbody"></div>
+  <p class="disclaimer">技術、籌碼與估值分析僅供參考，不構成投資建議。</p>`;
+  const render = tab => {
+    if (!panes[tab]) tab = 'trend';
+    STOCK_TAB = tab; sessionStorage.setItem('tab', tab);
+    destroyCharts();
+    $('#tabbody').innerHTML = panes[tab]();
+    document.querySelectorAll('.stabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
+    if (tab === 'trend') drawCharts(t);
+    if (tab === 'chips') drawChips(s.chips);
+  };
+  document.querySelectorAll('.stabs button').forEach(b => b.onclick = () => {
+    render(b.dataset.tab);
+    const top = $('.stabs').offsetTop - 60;
+    if (window.scrollY > top) window.scrollTo({ top, behavior: 'smooth' });
+  });
+  document.querySelectorAll('[data-swap]').forEach(a => a.onclick = e => { e.preventDefault(); location.replace(a.getAttribute('href')); });
+  $('.switcher .on')?.scrollIntoView({ inline: 'center', block: 'nearest' });
+  render(STOCK_TAB);
 }
+
+function chipsPane(s) {
+  const C = s.chips;
+  if (!C) return '<div class="card"><p class="muted">尚無法人資料（下次更新後出現）</p></div>';
+  const G = C.groups, H = C.holding;
+  const n = x => x == null ? '—' : `<span class="${cls(x)}">${sign(x)}${fmt0(x)}</span>`;
+  const streak = x => !x ? '—' : `<span class="${cls(x)}">${x > 0 ? '連買' : '連賣'} ${Math.abs(x)} 天</span>`;
+  const NAMES = { foreign: '外資', trust: '投信', dealer: '自營商' };
+  return `
+  <div class="card"><h3>法人籌碼 <span class="muted small">${C.date}</span></h3>
+    <div class="row"><div class="verdict ${C.verdict === '籌碼偏多' ? 'up' : C.verdict === '籌碼偏空' ? 'down' : ''}">${esc(C.verdict)}</div></div>
+    <div class="small muted">${esc(C.verdict_note)}</div>
+    <div class="tbl-wrap" style="margin-top:10px"><table>
+      <tr><th>單位：張</th><th>今日</th><th>近 5 日</th><th>近 20 日</th><th>連續</th></tr>
+      ${Object.entries(NAMES).map(([k, nm]) => `<tr><td>${nm}</td><td>${n(G[k].today)}</td><td>${n(G[k].sum5)}</td><td>${n(G[k].sum20)}</td><td>${streak(G[k].streak)}</td></tr>`).join('')}
+    </table></div>
+    ${H ? `<div class="grid3" style="margin-top:12px">
+      <div class="stat"><div class="label">外資持股比例</div><div class="value num">${fmt(H.now)}%</div></div>
+      <div class="stat"><div class="label">近 5 日變化</div><div class="value num ${cls(H.chg5)}">${sign(H.chg5)}${fmt(H.chg5)}</div></div>
+      <div class="stat"><div class="label">近 20 日變化</div><div class="value num ${cls(H.chg20)}">${sign(H.chg20)}${fmt(H.chg20)}</div></div>
+    </div><p class="small muted" style="margin:4px 0 0">持股比例變化單位為百分點；20 日減少超過 1 個百分點視為外資撤出。</p>` : ''}
+  </div>
+  ${C.signals.length ? `<div class="card"><h3>籌碼警示</h3>${C.signals.map(x => `<div class="sig ${x.level}"><span class="ic">${ICON[x.level]}</span><div><div class="t">${esc(x.title)}</div><div class="d">${esc(x.detail)}</div></div></div>`).join('')}</div>` : ''}
+  <div class="card"><h3>每日買賣超 <span class="muted small">近 60 日・張</span></h3>
+    <div class="seg"><button data-chip="foreign" class="primary">外資</button><button data-chip="trust">投信</button><button data-chip="dealer">自營商</button><button data-chip="total">合計</button></div>
+    <div class="legend" id="lgc"></div>
+    <div class="chart" id="cc" style="height:200px"></div>
+    ${H ? `<h3 style="margin-top:14px">外資持股比例 <span class="muted small">%</span></h3><div class="legend" id="lgh"></div><div class="chart sub" id="ch" style="height:130px"></div>` : ''}
+  </div>
+  <div class="card"><h3>近 10 日明細 <span class="muted small">張</span></h3>
+    <div class="tbl-wrap"><table><tr><th>日期</th><th>外資</th><th>投信</th><th>自營商</th><th>合計</th><th>收盤</th></tr>
+    ${C.daily.slice(-10).reverse().map(r => `<tr><td>${r.date.slice(5)}</td><td>${n(r.foreign)}</td><td>${n(r.trust)}</td><td>${n(r.dealer)}</td><td><b>${n(r.total)}</b></td><td>${fmt(r.close)}</td></tr>`).join('')}
+    </table></div>
+    <p class="small muted">大買／大賣＝單日買賣超超過近 60 日平均的 2 倍，且占當日成交量一定比例（外資 5%、投信 1.5%）。</p>
+  </div>`;
+}
+
+function drawChips(C) {
+  if (!C || !window.LightweightCharts) return;
+  const LC = window.LightweightCharts, up = css('--up'), dn = css('--down');
+  const opt = h => ({ height: h, layout: { background: { color: 'transparent' }, textColor: css('--muted'), fontSize: 11 },
+    grid: { vertLines: { visible: false }, horzLines: { color: css('--line') } }, rightPriceScale: { borderVisible: false },
+    timeScale: { borderVisible: false }, crosshair: { mode: 0 }, handleScale: false, handleScroll: false, localization: { locale: 'zh-TW' } });
+  const chart = LC.createChart($('#cc'), opt(200));
+  CHARTS.push(chart);
+  const hist = chart.addHistogramSeries({ priceLineVisible: false, lastValueVisible: false, priceFormat: { type: 'volume' } });
+  const NAMES = { foreign: '外資', trust: '投信', dealer: '自營商', total: '三大法人合計' };
+  let key = 'foreign';
+  const idx = {}; C.daily.forEach((r, i) => idx[r.date] = i);
+  const L = i => { const r = C.daily[i]; if (r) $('#lgc').innerHTML = `<span>${r.date}</span><span>${NAMES[key]} <b class="${cls(r[key])}">${sign(r[key])}${fmt0(r[key])}</b> 張</span><span>收盤 ${fmt(r.close)}</span>`; };
+  const set = k => {
+    key = k;
+    hist.setData(C.daily.map(r => ({ time: r.date, value: r[k], color: r[k] >= 0 ? up : dn })));
+    chart.timeScale().fitContent(); L(C.daily.length - 1);
+  };
+  chart.subscribeCrosshairMove(p => L(p.time && idx[p.time] != null ? idx[p.time] : C.daily.length - 1));
+  document.querySelectorAll('[data-chip]').forEach(b => b.onclick = () => {
+    document.querySelectorAll('[data-chip]').forEach(x => x.classList.toggle('primary', x === b)); set(b.dataset.chip);
+  });
+  set('foreign');
+  if (C.holding && $('#ch')) {
+    const hc = LC.createChart($('#ch'), opt(130));
+    CHARTS.push(hc);
+    const line = hc.addLineSeries({ color: css('--ma5'), lineWidth: 2, priceLineVisible: false, lastValueVisible: true });
+    line.setData(C.holding.series.map(([d, v]) => ({ time: d, value: v })));
+    hc.timeScale().fitContent();
+    const hs = C.holding.series, hi = {}; hs.forEach((x, i) => hi[x[0]] = i);
+    const LH = i => { const x = hs[i]; if (x) $('#lgh').innerHTML = `<span>${x[0]}</span><span><i style="background:var(--ma5)"></i>外資持股 ${fmt(x[1])}%</span>`; };
+    LH(hs.length - 1);
+    hc.subscribeCrosshairMove(p => LH(p.time && hi[p.time] != null ? hi[p.time] : hs.length - 1));
+  }
+  const ro = new ResizeObserver(() => CHARTS.forEach(c => c.applyOptions && c.applyOptions({ width: c.chartElement?.().parentElement?.clientWidth })));
+  ro.observe($('#cc'));
+  CHARTS.push({ remove: () => ro.disconnect() });
+}
+
 
 // ---------- 圖表 ----------
 function css(v) { return getComputedStyle(document.documentElement).getPropertyValue(v).trim(); }
@@ -506,10 +605,18 @@ async function waitForUpdate() {
   }
 }
 
-// ---------- 路由 ----------
+// ---------- 路由與返回 ----------
+const SCROLL = {};
+let CUR_HASH = null, LAST_LIST = '#/', FROM_LIST = false;
+function goBack() {
+  if (FROM_LIST && history.length > 1) history.back();
+  else location.replace(LAST_LIST || '#/');
+}
 async function route() {
   destroyCharts();
-  window.scrollTo(0, 0);
+  if (CUR_HASH != null) SCROLL[CUR_HASH] = window.scrollY;
+  const prev = CUR_HASH;
+  CUR_HASH = location.hash || '#/';
   const pw = getPw();
   if (!REPORT) {
     if (!pw) return viewLock();
@@ -517,15 +624,33 @@ async function route() {
   }
   $('#tabbar').hidden = false;
   $('#updated').textContent = '更新於 ' + REPORT.generated;
-  const h = location.hash.replace(/^#\/?/, '');
+  const h = CUR_HASH.replace(/^#\/?/, '');
+  const isStock = h.startsWith('stock/');
   const tab = h.startsWith('events') ? 'events' : h.startsWith('settings') ? 'settings' : 'home';
-  document.querySelectorAll('.tabbar a').forEach(a => a.classList.toggle('on', a.dataset.tab === tab));
-  if (h.startsWith('stock/')) viewStock(h.slice(6));
-  else if (tab === 'events') viewEvents();
-  else if (tab === 'settings') viewSettings();
-  else viewHome();
+  if (isStock) {
+    const prevIsStock = prev && prev.includes('stock/');
+    if (!prevIsStock) FROM_LIST = prev != null && !prev.includes('settings');
+  } else { LAST_LIST = CUR_HASH; FROM_LIST = false; }
+  $('#back').hidden = !isStock;
+  $('#brand').hidden = isStock;
+  document.querySelectorAll('.tabbar a').forEach(a => a.classList.toggle('on', !isStock && a.dataset.tab === tab));
+  if (isStock) { viewStock(h.slice(6)); window.scrollTo(0, 0); }
+  else {
+    if (tab === 'events') viewEvents(); else if (tab === 'settings') viewSettings(); else viewHome();
+    window.scrollTo(0, SCROLL[CUR_HASH] || 0);
+  }
 }
 window.addEventListener('hashchange', route);
+$('#back').onclick = e => { e.preventDefault(); goBack(); };
+// 從螢幕左邊緣往右滑＝返回
+let sx = null, sy = 0;
+document.addEventListener('touchstart', e => { const t = e.touches[0]; sx = t.clientX < 28 ? t.clientX : null; sy = t.clientY; }, { passive: true });
+document.addEventListener('touchend', e => {
+  if (sx == null) return;
+  const t = e.changedTouches[0];
+  if (t.clientX - sx > 70 && Math.abs(t.clientY - sy) < 60 && location.hash.includes('stock/')) goBack();
+  sx = null;
+}, { passive: true });
 // 從背景回來時自動抓最新資料
 document.addEventListener('visibilitychange', async () => {
   if (document.visibilityState !== 'visible' || !REPORT) return;

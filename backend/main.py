@@ -16,6 +16,7 @@ from datetime import date, datetime, timedelta
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import analysis  # noqa: E402
+import chips  # noqa: E402
 import events as ev  # noqa: E402
 import fundamentals as fu  # noqa: E402
 import news as nw  # noqa: E402
@@ -53,6 +54,12 @@ def build_stock(st, twse_ex, settings, today):
     tech = step("技術分析", lambda: analysis.analyze(bars, st, stop_pct)) if bars else None
     out["tech"] = tech
     price = tech["close"] if tech and "close" in tech else None
+
+    fetched = step("法人買賣", lambda: chips.fetch(code))
+    out["chips"] = step("籌碼分析", lambda: chips.analyze(fetched[0], fetched[1], bars)) if fetched and bars else None
+    if tech and "signals" in tech and out["chips"]:
+        rank = {"danger": 0, "warn": 1, "buy": 2, "info": 3}
+        tech["signals"] = sorted(tech["signals"] + out["chips"]["signals"], key=lambda x: rank[x["level"]])
 
     stmts = step("財報", lambda: src.statements(code)) or []
     out["financials"] = step("財報比較", lambda: fu.compare_quarters(stmts))
