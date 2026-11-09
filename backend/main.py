@@ -34,9 +34,27 @@ REPORT = os.path.join(ROOT, "docs", "data", "report.enc")
 
 NOTIFY_LEVELS = ("danger", "warn", "buy")
 LEVEL_ICON = {"danger": "🔴", "warn": "🟠", "buy": "🟢", "info": "🔵"}
+# 跟「成本」有關的訊號：多帳戶時要依各帳戶的成本分別計算
+COST_KEYS = {"stoploss_pct", "profit_ma20", "profit_ma10", "profit_ma5", "near_stop"}
+RANK = {"danger": 0, "warn": 1, "buy": 2, "info": 3}
 
 
-def build_stock(st, twse_ex, settings, today):
+def positions_of(portfolio):
+    """回傳 {代號: [各帳戶持倉]}；舊格式（沒有 holdings）時每檔視為一個持倉。"""
+    names = {a["id"]: a["name"] for a in portfolio.get("accounts", [])}
+    out = {}
+    src_list = portfolio.get("holdings")
+    if src_list is None:
+        src_list = portfolio.get("stocks", [])
+    for h in src_list:
+        if float(h.get("shares") or 0) > 0 and float(h.get("cost") or 0) > 0:
+            out.setdefault(h["code"], []).append({
+                "account": h.get("account"), "account_name": names.get(h.get("account"), ""),
+                "cost": float(h["cost"]), "shares": float(h["shares"])})
+    return out
+
+
+def build_stock(st, twse_ex, settings, today, positions=None):
     code = st["code"]
     name = st.get("name") or src.stock_name(code)
     out = {"code": code, "name": name, "cost": st.get("cost"), "shares": st.get("shares"),
@@ -53,14 +71,25 @@ def build_stock(st, twse_ex, settings, today):
 
     bars = step("股價", lambda: src.prices(code)) or []
     tech = step("技術分析", lambda: analysis.analyze(bars, st, stop_pct)) if bars else None
+    if tech and "signals" in tech and positions and (len(positions) > 1 or positions[0]["account_name"]):
+        # 依各帳戶成本分別判斷停損 / 停利
+        sigs = [x for x in tech["signals"] if x["key"] not in COST_KEYS]
+        for pos in positions:
+            pa = analysis.analyze(bars, pos, stop_pct)
+            pos["stop_price"] = pa.get("stop_price")
+            for x in pa.get("signals", []):
+                if x["key"] in COST_KEYS:
+                    sigs.append(dict(x, key="%s~%s" % (x["key"], pos["account"]), account=pos["account"],
+                                     title="%s%s" % ("【%s】" % pos["account_name"] if pos["account_name"] else "", x["title"])))
+        tech["signals"] = sorted(sigs, key=lambda x: RANK[x["level"]])
+    out["positions"] = positions or []
     out["tech"] = tech
     price = tech["close"] if tech and "close" in tech else None
 
     fetched = step("法人買賣", lambda: chips.fetch(code))
     out["chips"] = step("籌碼分析", lambda: chips.analyze(fetched[0], fetched[1], bars)) if fetched and bars else None
     if tech and "signals" in tech and out["chips"]:
-        rank = {"danger": 0, "warn": 1, "buy": 2, "info": 3}
-        tech["signals"] = sorted(tech["signals"] + out["chips"]["signals"], key=lambda x: rank[x["level"]])
+        tech["signals"] = sorted(tech["signals"] + out["chips"]["signals"], key=lambda x: RANK[x["level"]])
 
     stmts = step("財報", lambda: src.statements(code)) or []
     out["financials"] = step("財報比較", lambda: fu.compare_quarters(stmts))
@@ -160,10 +189,14 @@ def main():
     twse_ex = src.twse_ex_rights()
     stocklist.refresh_if_old()
 
-    stocks = []
+    pos = positions_of(portfolio)
+    stocks, seen = [], set()
     for st in portfolio.get("stocks", []):
+        if st["code"] in seen:  # 同一檔在多個帳戶只分析一次
+            continue
+        seen.add(st["code"])
         print("== %s %s" % (st["code"], st.get("name", "")))
-        stocks.append(build_stock(st, twse_ex, settings, today))
+        stocks.append(build_stock(st, twse_ex, settings, today, pos.get(st["code"])))
 
     state = load_encrypted(STATE, pw, default={}) or {}
     msgs = collect_alerts(stocks, state, settings, today)

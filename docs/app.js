@@ -55,6 +55,100 @@ function toast(msg, ms = 2600) {
   document.body.appendChild(t); setTimeout(() => t.remove(), ms);
 }
 
+// ---------- 持股與進出記錄計算 ----------
+const FEE_RATE = 0.001425, SELL_FEE_TAX = 0.001425 + 0.003;
+const uid = () => Math.random().toString(36).slice(2, 9);
+const today = () => { const d = new Date(Date.now() + 8 * 3600e3); return d.toISOString().slice(0, 10); };
+function calcFee(price, shares, disc) {
+  const amt = price * shares; if (!amt) return 0;
+  return Math.max(shares >= 1000 ? 20 : 1, Math.floor(amt * FEE_RATE * (disc || 10) / 10));
+}
+const calcTax = (code, price, shares) => Math.floor(price * shares * (String(code).startsWith('00') ? 0.001 : 0.003));
+const SIDE = { buy: '買進', sell: '賣出', init: '現有持股' };
+// 依時間重播每筆買賣 → 剩餘股數、平均成本（含買進手續費）、已實現損益
+function posOf(h) {
+  let sh = 0, ct = 0, real = 0;
+  const rows = (h.trades || []).map((t, i) => ({ ...t, _i: i }))
+    .sort((a, b) => (a.side === 'init' ? '' : a.date || '').localeCompare(b.side === 'init' ? '' : b.date || '') || a._i - b._i)
+    .map(t => {
+      if (t.side === 'sell') {
+        const avg = sh ? ct / sh : 0, q = Math.min(t.shares, sh);
+        const pl = t.price * t.shares - (t.fee || 0) - (t.tax || 0) - avg * t.shares;
+        real += pl; ct -= avg * q; sh -= q;
+        if (sh <= 0) { sh = 0; ct = 0; }
+        return { ...t, avg, pl: Math.round(pl) };
+      }
+      sh += t.shares; ct += t.price * t.shares + (t.side === 'buy' ? (t.fee || 0) : 0);
+      return t;
+    });
+  return { shares: sh, cost: sh ? ct / sh : null, realized: Math.round(real), rows };
+}
+// 舊格式（只有 stocks）自動轉成「帳戶＋進出記錄」格式
+function normPf(pf0) {
+  const pf = structuredClone(pf0 || {});
+  pf.settings = { stop_pct: 8, notify_days_before: 7, fee_discount: 10, ...(pf.settings || {}) };
+  pf.accounts = pf.accounts || [];
+  if (!pf.holdings) pf.holdings = (pf.stocks || []).map(s => ({
+    id: uid(), account: null, code: s.code, name: s.name || '',
+    trades: s.shares > 0 && s.cost ? [{ id: uid(), side: 'init', date: '', price: Number(s.cost), shares: Number(s.shares), fee: 0, tax: 0 }] : [],
+  }));
+  return pf;
+}
+// 存檔前：把計算結果寫回每個持倉，並產生後端用的「每檔合計」清單
+function finalizePf(pf) {
+  pf.version = 2;
+  pf.holdings = pf.holdings.filter(h => /^\d{4,6}[A-Z]?$/.test(h.code));
+  const by = {};
+  pf.holdings.forEach(h => {
+    const p = posOf(h);
+    h.shares = p.shares; h.cost = p.cost == null ? null : +p.cost.toFixed(4); h.realized = p.realized;
+    const b = by[h.code] || (by[h.code] = { code: h.code, name: h.name, shares: 0, ct: 0 });
+    b.shares += p.shares; b.ct += (p.cost || 0) * p.shares;
+  });
+  pf.stocks = Object.values(by).map(b => ({ code: b.code, name: b.name, shares: b.shares, cost: b.shares ? +(b.ct / b.shares).toFixed(4) : null }));
+  return pf;
+}
+const PF = () => normPf(REPORT.portfolio);
+const acctName = (pf, id) => pf.accounts.find(a => a.id === id)?.name || '未分類';
+const validAcct = (pf, id) => pf.accounts.some(a => a.id === id);
+// 每個持倉 + 最新行情 → 損益
+function positionsView(pf) {
+  return pf.holdings.map(h => {
+    const p = posOf(h), s = REPORT.stocks.find(x => x.code === h.code), t = s?.tech || {};
+    const close = t.close, costT = p.cost ? p.cost * p.shares : 0;
+    const value = close != null ? close * p.shares : null;
+    return { h, p, s, t, acct: validAcct(pf, h.account) ? h.account : null, value, costT,
+      gross: value != null && p.cost ? value - costT : null,
+      pct: p.cost && close != null ? (close - p.cost) / p.cost * 100 : null,
+      net: value != null && p.cost ? value * (1 - SELL_FEE_TAX) - costT : null,
+      day: (t.chg || 0) * p.shares };
+  });
+}
+function sumUp(list) {
+  const o = { value: 0, cost: 0, pnl: 0, net: 0, day: 0, realized: 0 };
+  list.forEach(x => {
+    o.realized += x.p.realized;
+    if (x.value == null || !x.p.shares) return;
+    o.value += x.value; o.cost += x.costT; o.pnl += x.gross || 0; o.net += x.net || 0; o.day += x.day;
+  });
+  o.pct = o.cost ? o.pnl / o.cost * 100 : null;
+  return o;
+}
+let ACCT = sessionStorage.getItem('acct') || 'all';
+function acctChips(pf) {
+  const groups = [...pf.accounts, ...(pf.holdings.some(h => !validAcct(pf, h.account)) && pf.accounts.length ? [{ id: 'none', name: '未分類' }] : [])];
+  if (!groups.length) return '';
+  if (ACCT !== 'all' && !groups.some(g => g.id === ACCT)) ACCT = 'all';
+  return `<div class="switcher acct-chips">${[{ id: 'all', name: '全部' }, ...groups].map(g =>
+    `<a href="#" data-acct="${g.id}" class="${g.id === ACCT ? 'on' : ''}">${esc(g.name)}</a>`).join('')}</div>`;
+}
+function bindAcctChips(rerender) {
+  document.querySelectorAll('[data-acct]').forEach(a => a.onclick = e => {
+    e.preventDefault(); ACCT = a.dataset.acct; sessionStorage.setItem('acct', ACCT); rerender();
+  });
+}
+const inAcct = x => ACCT === 'all' || (ACCT === 'none' ? x.acct == null : x.acct === ACCT);
+
 // ---------- 資料 ----------
 async function loadReport(pw) {
   const r = await fetch('data/report.enc?t=' + Date.now(), { cache: 'no-store' });
@@ -119,46 +213,65 @@ function viewLock(err) {
 }
 
 function viewHome() {
-  const R = REPORT, S = R.summary;
+  const R = REPORT, pf = PF();
+  const all = positionsView(pf), list = all.filter(inAcct);
+  const S = sumUp(list);
+  const codes = new Set(list.map(x => x.h.code));
   const alerts = [];
-  R.stocks.forEach(s => (s.tech?.signals || []).filter(x => x.level !== 'info').forEach(x => alerts.push({ s, x })));
-  const soon = R.events.filter(e => e.days >= 0 && e.days <= 7);
+  R.stocks.filter(s => codes.has(s.code)).forEach(s => (s.tech?.signals || []).filter(x => x.level !== 'info')
+    .filter(x => !x.account || ACCT === 'all' || x.account === ACCT).forEach(x => alerts.push({ s, x })));
+  const soon = R.events.filter(e => e.days >= 0 && e.days <= 7 && codes.has(e.code));
+  const live = list.filter(x => x.p.shares > 0 || !x.p.rows.length), closed = list.filter(x => !x.p.shares && x.p.rows.length);
+  const groups = ACCT === 'all' && pf.accounts.length
+    ? [...pf.accounts.map(a => ({ id: a.id, name: a.name })), { id: null, name: '未分類' }].map(g => ({ ...g, items: live.filter(x => x.acct === g.id) })).filter(g => g.items.length)
+    : [{ id: '', name: '', items: live }];
   app.innerHTML = `
+  ${acctChips(pf)}
   <div class="card">
+    ${ACCT !== 'all' ? `<div class="muted small" style="margin-bottom:4px">📁 ${esc(ACCT === 'none' ? '未分類' : acctName(pf, ACCT))}</div>` : ''}
     <div class="row wrap">
-      <div class="stat"><div class="label">未實現損益（含息前）</div>
+      <div class="stat"><div class="label">未實現損益</div>
         <div class="value big ${cls(S.pnl)}">${sign(S.pnl)}${fmt0(S.pnl)}</div>
-        <div class="${cls(S.pnl)} num">${pct(S.pnl_pct)}</div></div>
+        <div class="${cls(S.pnl)} num">${pct(S.pct)}</div></div>
       <div class="stat" style="text-align:right"><div class="label">今日損益</div>
         <div class="value ${cls(S.day)}">${sign(S.day)}${fmt0(S.day)}</div></div>
     </div>
-    <div class="grid3" style="margin-top:12px">
+    <div class="grid2" style="margin-top:12px">
       <div class="stat"><div class="label">市值</div><div class="num">${fmt0(S.value)}</div></div>
       <div class="stat"><div class="label">成本</div><div class="num">${fmt0(S.cost)}</div></div>
-      <div class="stat"><div class="label">賣出淨損益*</div><div class="num ${cls(S.net)}">${sign(S.net)}${fmt0(S.net)}</div></div>
+      <div class="stat"><div class="label">已實現損益</div><div class="num ${cls(S.realized)}">${sign(S.realized)}${fmt0(S.realized)}</div></div>
+      <div class="stat"><div class="label">現在全賣淨損益*</div><div class="num ${cls(S.net)}">${sign(S.net)}${fmt0(S.net)}</div></div>
     </div>
-    <div class="muted small" style="margin-top:6px">* 扣除手續費 0.1425% 與證交稅 0.3% 的估計值</div>
+    <div class="muted small" style="margin-top:6px">* 扣除手續費 0.1425% 與證交稅 0.3% 的估計值；已實現損益來自「紀錄」裡的賣出記錄</div>
   </div>
   ${alerts.length ? `<div class="card"><h3>需要注意 <span class="muted">${alerts.length} 則</span></h3>
     ${alerts.slice(0, 8).map(({ s, x }) => `<a href="#/stock/${s.code}" class="sig ${x.level}" style="color:inherit">
       <span class="ic">${ICON[x.level]}</span><div><div class="t">${esc(s.name)}｜${esc(x.title)}</div><div class="d">${esc(x.detail)}</div></div></a>`).join('')}
   </div>` : ''}
   ${soon.length ? `<div class="card"><h3>📅 7 天內事件</h3>${soon.map(eventRow).join('')}</div>` : ''}
-  <h3 style="margin:16px 4px 8px">我的持股</h3>
-  ${R.stocks.map(stockCard).join('')}
+  ${groups.map(g => {
+    const st = sumUp(g.items);
+    return `<div class="grp-h"><h3>${g.name ? '📁 ' + esc(g.name) : '我的持股'}</h3>
+      ${g.name ? `<span class="small num ${cls(st.pnl)}">${sign(st.pnl)}${fmt0(st.pnl)}（${pct(st.pct)}）</span>` : ''}</div>
+      ${g.items.map(stockCard).join('')}`;
+  }).join('') || '<p class="center muted">這個帳戶還沒有股票，到「設定」新增</p>'}
+  ${closed.length ? `<p class="small muted center">已出清 ${closed.length} 檔（${closed.map(x => esc(x.h.name)).join('、')}），明細在「紀錄」</p>` : ''}
   <p class="disclaimer">技術與估值分析僅供參考，不構成投資建議。投資前請自行判斷風險。</p>`;
+  bindAcctChips(viewHome);
 }
 
-function stockCard(s) {
-  const t = s.tech || {}, p = t.pnl;
-  const top = (t.signals || [])[0];
-  return `<a class="card stock" href="#/stock/${s.code}">
-    <div class="row"><div><span class="name">${esc(s.name)}</span><span class="code">${s.code}</span> ${t.trend ? trendBadge(t.trend) : ''}</div>
+function stockCard(x) {
+  const { h, p, s, t } = x;
+  if (!s) return `<div class="card stock"><div class="row"><div><span class="name">${esc(h.name)}</span><span class="code">${h.code}</span></div></div>
+    <div class="meta muted">⏳ 新加入，雲端分析中（約 3～5 分鐘）</div></div>`;
+  const top = (t.signals || []).filter(z => !z.account || z.account === h.account)[0];
+  return `<a class="card stock" href="#/stock/${h.code}">
+    <div class="row"><div><span class="name">${esc(s.name)}</span><span class="code">${h.code}</span> ${t.trend ? trendBadge(t.trend) : ''}</div>
       <div class="price num ${cls(t.chg)}">${fmt(t.close)}</div></div>
-    <div class="row small"><span class="muted">${s.shares ? `${fmt0(s.shares)} 股・成本 ${fmt(s.cost)}` : '觀察中'}</span>
+    <div class="row small"><span class="muted">${p.shares ? `${fmt0(p.shares)} 股・成本 ${fmt(p.cost)}` : '觀察中'}</span>
       <span class="num ${cls(t.chg)}">${sign(t.chg)}${fmt(t.chg)}（${pct(t.chg_pct)}）</span></div>
-    ${p ? `<div class="row" style="margin-top:6px"><span class="small muted">損益</span>
-      <span class="num ${cls(p.gross)}" style="font-weight:700">${sign(p.gross)}${fmt0(p.gross)}（${pct(p.pct)}）</span></div>` : ''}
+    ${x.gross != null && p.shares ? `<div class="row" style="margin-top:6px"><span class="small muted">損益</span>
+      <span class="num ${cls(x.gross)}" style="font-weight:700">${sign(x.gross)}${fmt0(x.gross)}（${pct(x.pct)}）</span></div>` : ''}
     ${top ? `<div class="meta">${ICON[top.level]} ${esc(top.title)}</div>` : ''}
     ${s.chips ? `<div class="meta">🏦 ${esc(s.chips.verdict)}｜${esc(s.chips.verdict_note)}</div>` : ''}
     <div class="go">查看分析 ›</div>
@@ -181,12 +294,52 @@ function viewEvents() {
     <p class="muted small">財報日期為法定公布截止日（Q1 5/15、Q2 8/14、Q3 11/14、年報 3/31），公司可能提早公布。事件前 7 天與前 1 天會推播提醒。</p></div>`;
 }
 
+function tradeRow(t, h, pf, showStock = true) {
+  const amt = t.price * t.shares;
+  return `<div class="trade">
+    <div class="tside ${t.side === 'sell' ? 'down' : t.side === 'buy' ? 'up' : ''}">${SIDE[t.side]}</div>
+    <div class="tmain">
+      ${showStock ? `<div><a href="#/stock/${h.code}"><b>${esc(h.name)}</b></a> <span class="muted small">${h.code}</span> <span class="tag">${esc(acctName(pf, h.account))}</span></div>` : ''}
+      <div class="small">${fmt0(t.shares)} 股 × ${fmt(t.price)}${t.side === 'init' ? '（平均成本）' : `＝${fmt0(amt)}`}</div>
+      ${t.side !== 'init' ? `<div class="small muted">${t.date || ''}${t.fee ? `・手續費 ${fmt0(t.fee)}` : ''}${t.tax ? `・交易稅 ${fmt0(t.tax)}` : ''}</div>` : ''}
+    </div>
+    <div class="tpl">${t.side === 'sell' ? `<div class="small muted">損益</div><b class="num ${cls(t.pl)}">${sign(t.pl)}${fmt0(t.pl)}</b>` : ''}</div>
+  </div>`;
+}
+function viewTrades() {
+  const pf = PF();
+  const items = [];
+  pf.holdings.forEach(h => { const acct = validAcct(pf, h.account) ? h.account : null; if (!inAcct({ acct })) return; posOf(h).rows.forEach(t => items.push({ t, h })); });
+  items.sort((a, b) => (b.t.side === 'init' ? '' : b.t.date || '').localeCompare(a.t.side === 'init' ? '' : a.t.date || ''));
+  const sells = items.filter(x => x.t.side === 'sell');
+  const real = sells.reduce((a, x) => a + x.t.pl, 0), wins = sells.filter(x => x.t.pl > 0).length;
+  const byMonth = {};
+  items.forEach(x => { const k = x.t.side === 'init' ? '現有持股（期初）' : (x.t.date || '').slice(0, 7).replace('-', ' 年 ') + ' 月'; (byMonth[k] = byMonth[k] || []).push(x); });
+  app.innerHTML = `
+  ${acctChips(pf)}
+  <div class="card">
+    <div class="row wrap">
+      <div class="stat"><div class="label">已實現損益</div><div class="value big ${cls(real)}">${sign(real)}${fmt0(real)}</div></div>
+      <div class="stat" style="text-align:right"><div class="label">賣出 ${sells.length} 筆</div><div class="num">${sells.length ? `勝率 ${fmt0(wins / sells.length * 100)}%` : '—'}</div></div>
+    </div>
+    <p class="small muted" style="margin:6px 0 0">新增買賣：設定 → 帳戶與持股 → 點股票 → 加入一筆</p>
+  </div>
+  ${Object.entries(byMonth).map(([m, xs]) => {
+    const r = xs.filter(x => x.t.side === 'sell').reduce((a, x) => a + x.t.pl, 0);
+    return `<div class="card"><div class="row"><h3 style="margin:0">${esc(m)}</h3>${xs.some(x => x.t.side === 'sell') ? `<span class="small num ${cls(r)}">${sign(r)}${fmt0(r)}</span>` : ''}</div>
+      ${xs.map(x => tradeRow(x.t, x.h, pf)).join('')}</div>`;
+  }).join('') || '<p class="center muted">還沒有進出記錄</p>'}`;
+  bindAcctChips(viewTrades);
+}
+
 let STOCK_TAB = sessionStorage.getItem('tab') || 'trend';
 const STOCK_TABS = [['trend', '走勢訊號'], ['chips', '法人籌碼'], ['fin', '財報估值'], ['news', '新聞事件']];
 function viewStock(code) {
   const s = REPORT.stocks.find(x => x.code === code);
   if (!s) { app.innerHTML = '<p class="center muted">找不到這檔股票</p>'; return; }
-  const t = s.tech || {}, p = t.pnl, v = s.valuation, f = s.financials, rv = s.revenue, c = s.competitiveness;
+  const t = s.tech || {}, v = s.valuation, f = s.financials, rv = s.revenue, c = s.competitiveness;
+  const pf = PF(), mine = positionsView(pf).filter(x => x.h.code === code);
+  const held = mine.filter(x => x.p.shares > 0), trades = mine.flatMap(x => x.p.rows.map(r => ({ t: r, h: x.h })));
   const panes = {
     trend: () => `
   <div class="card"><h3>走勢圖 <span class="muted small">日K・近一年</span></h3>
@@ -298,11 +451,14 @@ function viewStock(code) {
         <div class="num ${cls(t.chg)}">${sign(t.chg)}${fmt(t.chg)}（${pct(t.chg_pct)}）</div></div>
       <div class="small muted" style="text-align:right">${t.date || ''} 收盤<br>成交 ${fmt0(t.volume)} 張</div>
     </div>
-    ${p ? `<div class="grid3" style="margin-top:12px">
-      <div class="stat"><div class="label">持有</div><div class="num">${fmt0(s.shares)} 股</div></div>
-      <div class="stat"><div class="label">成本</div><div class="num">${fmt(s.cost)}</div></div>
-      <div class="stat"><div class="label">損益</div><div class="num ${cls(p.gross)}" style="font-weight:700">${sign(p.gross)}${fmt0(p.gross)}<br>${pct(p.pct)}</div></div>
-    </div>` : ''}
+    ${held.length ? `<div class="tbl-wrap" style="margin-top:12px"><table class="pos">
+      <tr><th>帳戶</th><th>股數</th><th>成本</th><th>損益</th></tr>
+      ${held.map(x => `<tr><td>${esc(acctName(pf, x.h.account))}</td><td>${fmt0(x.p.shares)}</td><td>${fmt(x.p.cost)}</td>
+        <td class="${cls(x.gross)}"><b>${sign(x.gross)}${fmt0(x.gross)}</b><br><small>${pct(x.pct)}</small></td></tr>`).join('')}
+    </table></div>
+    ${(s.positions || []).filter(x => x.stop_price && x.account_name).length > 1 ? `<p class="small" style="margin:6px 0 0">停損參考：${s.positions.filter(x => x.stop_price).map(x => `${esc(x.account_name)} <b class="down">${fmt(x.stop_price)}</b>`).join('・')}</p>` : ''}` : ''}
+    ${trades.length ? `<details style="margin-top:8px"><summary>這檔的進出記錄（${trades.length} 筆）</summary>
+      ${trades.slice().reverse().map(x => tradeRow(x.t, x.h, pf, false).replace('<div class="tmain">', `<div class="tmain"><span class="tag">${esc(acctName(pf, x.h.account))}</span>`)).join('')}</details>` : ''}
   </div>
   <div class="stabs">${STOCK_TABS.map(([k, n]) => `<button data-tab="${k}">${n}</button>`).join('')}</div>
   <div id="tabbody"></div>
@@ -431,7 +587,12 @@ function drawCharts(t) {
   ].filter(Boolean).sort((x, y) => x.time < y.time ? -1 : 1);
   candle.setMarkers(markers);
   if (t.stop_price) candle.createPriceLine({ price: t.stop_price, color: dn, lineStyle: 2, lineWidth: 1, axisLabelVisible: true, title: '停損' });
-  if (REPORT && t.pnl) { const s = REPORT.stocks.find(x => x.tech === t); if (s?.cost) candle.createPriceLine({ price: s.cost, color: css('--text2'), lineStyle: 1, lineWidth: 1, axisLabelVisible: true, title: '成本' }); }
+  if (REPORT) {
+    const s = REPORT.stocks.find(x => x.tech === t), pf = PF();
+    const held = s ? positionsView(pf).filter(x => x.h.code === s.code && x.p.shares > 0) : [];
+    held.forEach(x => candle.createPriceLine({ price: x.p.cost, color: css('--text2'), lineStyle: 1, lineWidth: 1, axisLabelVisible: true,
+      title: held.length > 1 ? '成本・' + acctName(pf, x.h.account) : '成本' }));
+  }
   const n = S.bars.length;
   main.timeScale().setVisibleLogicalRange({ from: Math.max(0, n - 90), to: n });
 
@@ -505,28 +666,17 @@ function stockHint(code) {
   if (x) return `✓ ${esc(x[1])}・${x[2]}・${esc(x[3])}`;
   return STOCKS && /^\d{4,6}[A-Z]?$/.test(code) ? '<span class="down">找不到這個代號，請確認</span>' : '';
 }
-function suggest(inp, pf) {
-  const row = inp.closest('.hold-row'), i = +row.dataset.i, box = row.querySelector('.sugg');
+// 代號輸入：完全正確 → 呼叫 onPick；只打前幾碼 → 顯示建議
+function suggest(inp, wrap, onPick) {
+  const box = wrap.querySelector('.sugg'), hint = wrap.querySelector('.hint');
   const q = inp.value.trim().toUpperCase();
-  const fill = x => {
-    inp.value = x[0];
-    pf.stocks[i].code = x[0]; pf.stocks[i].name = x[1];
-    row.querySelector('[data-k=name]').value = x[1];
-    row.querySelector('.hint').innerHTML = stockHint(x[0]);
-    const dup = pf.stocks.some((s, j) => j !== i && s.code === x[0]);
-    if (dup) row.querySelector('.hint').innerHTML += ' <span class="down">（清單裡已經有這檔）</span>';
-  };
-  const exact = STOCK_MAP[q];
-  // 代號完全正確：自動帶入名稱、收起建議、直接跳到「平均成本」
-  if (exact) { fill(exact); box.hidden = true; box.innerHTML = ''; row.querySelector('[data-k=cost]').focus(); return; }
-  row.querySelector('.hint').innerHTML = stockHint(q);
-  const list = !q || !STOCKS ? [] : STOCKS.filter(x => x[0].startsWith(q) || (!/^\d/.test(q) && x[1].toUpperCase().includes(q))).slice(0, 8);
+  const pick = x => { inp.value = x[0]; box.hidden = true; box.innerHTML = ''; hint.innerHTML = stockHint(x[0]); onPick(x); };
+  if (STOCK_MAP[q]) return pick(STOCK_MAP[q]);
+  hint.innerHTML = stockHint(q);
+  const list = !q || !STOCKS ? [] : STOCKS.filter(x => x[0].startsWith(q)).slice(0, 8);
   box.innerHTML = list.map(x => `<button type="button" data-c="${x[0]}"><b>${x[0]}</b> ${esc(x[1])} <small class="muted">${x[2]}・${esc(x[3])}</small></button>`).join('');
   box.hidden = !list.length;
-  box.querySelectorAll('button').forEach(b => b.onpointerdown = e => {
-    e.preventDefault(); fill(STOCK_MAP[b.dataset.c]); box.hidden = true; box.innerHTML = '';
-    row.querySelector('[data-k=cost]').focus();
-  });
+  box.querySelectorAll('button').forEach(b => b.onpointerdown = e => { e.preventDefault(); pick(STOCK_MAP[b.dataset.c]); });
 }
 
 function newsTime(ts) {
@@ -537,29 +687,32 @@ function newsTime(ts) {
 }
 
 // ---------- 設定 ----------
+let DRAFT = null, OPEN = null, SIDE_SEL = null, DIRTY = false;
+// 數字欄位：點進去時整格選取，直接打新數字就會取代，不用先刪掉 0
+function selectOnFocus(root = document) {
+  root.querySelectorAll('input.num').forEach(inp => inp.onfocus = () => {
+    if (inp.value === '0') inp.value = '';
+    setTimeout(() => { try { inp.setSelectionRange(0, inp.value.length); } catch { inp.select(); } }, 0);
+  });
+}
 function viewSettings() {
-  const pf = structuredClone(REPORT.portfolio);
-  const set = pf.settings || (pf.settings = { stop_pct: 8, notify_days_before: 7 });
-  const rows = () => pf.stocks.map((s, i) => `<div class="hold-row" data-i="${i}">
-      <div><label>股票代號</label><input data-k="code" value="${esc(s.code)}" inputmode="numeric" pattern="[0-9]*" autocomplete="off" autocorrect="off" spellcheck="false" placeholder="例：2330"></div>
-      <div><label>名稱</label><input data-k="name" value="${esc(s.name || '')}"></div>
-      <div><label>平均成本</label><input data-k="cost" value="${s.cost || ''}" inputmode="decimal" placeholder="0"></div>
-      <div><label>股數</label><input data-k="shares" value="${s.shares || ''}" inputmode="numeric" pattern="[0-9]*" placeholder="0"></div>
-      <button class="danger" data-del="${i}">刪除</button>
-      <div class="hint small muted">${stockHint(s.code)}</div>
-      <div class="sugg" hidden></div></div>`).join('');
+  const pf = DRAFT || (DRAFT = normPf(REPORT.portfolio));
+  const set = pf.settings;
   const pushState = 'Notification' in window ? Notification.permission : 'unsupported';
   const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone;
   app.innerHTML = `
-  <div class="card"><h3>我的持股</h3>
-    <p class="small muted">股數填 0 代表只觀察不持有。1 張 = 1000 股。</p>
-    <div id="rows">${rows()}</div>
-    <div class="row"><button id="add">＋ 新增股票</button><button class="primary" id="save">儲存並更新</button></div>
+  <div class="card"><h3>帳戶與持股</h3>
+    <p class="small muted">點股票可以加入買進／賣出記錄，App 會自動算出股數、平均成本與已實現損益。</p>
+    <div id="hold"></div>
+    <div class="addacct"><input id="newacct" placeholder="新帳戶名稱，例：元大 小明"><button id="addacct">＋ 新增帳戶</button></div>
+    <button class="primary" id="save" style="width:100%;margin-top:12px">儲存並更新</button>
+    <p class="small muted center" id="dirty" hidden style="color:var(--warn)">有尚未儲存的變更</p>
   </div>
-  <div class="card"><h3>警示設定</h3>
+  <div class="card"><h3>警示與費用設定</h3>
     <div class="grid2">
       <div><label>停損比例（%）</label><input id="stop" value="${set.stop_pct}" inputmode="decimal" class="num"></div>
       <div><label>事件提前幾天通知</label><input id="nd" value="${set.notify_days_before}" inputmode="numeric" pattern="[0-9]*" class="num"></div>
+      <div><label>手續費折數（6 折填 6，無折扣填 10）</label><input id="disc" value="${set.fee_discount}" inputmode="decimal" class="num"></div>
     </div>
   </div>
   <div class="card"><h3>通知</h3>
@@ -577,50 +730,175 @@ function viewSettings() {
   <div class="card"><button id="logout" style="width:100%">登出（清除此裝置的密碼）</button></div>
   <p class="disclaimer">最後更新：${esc(REPORT.generated)}</p>`;
 
-  const bind = () => {
-    document.querySelectorAll('.hold-row input').forEach(inp => inp.oninput = () => {
-      const i = +inp.closest('.hold-row').dataset.i, k = inp.dataset.k;
-      pf.stocks[i][k] = (k === 'cost' || k === 'shares') ? (inp.value === '' ? null : Number(inp.value)) : inp.value.trim();
-      if (k === 'code') suggest(inp, pf);
-    });
-    document.querySelectorAll('.hold-row [data-k=code]').forEach(inp => inp.onblur = () => setTimeout(() => {
-      const box = inp.closest('.hold-row')?.querySelector('.sugg'); if (box) box.hidden = true;
-    }, 200));
-    // 數字欄位：點進去時整格選取，直接打新數字就會取代，不用先刪掉 0
-    document.querySelectorAll('.hold-row [data-k=cost], .hold-row [data-k=shares], input.num').forEach(inp => inp.onfocus = () => {
-      if (inp.value === '0') inp.value = '';
-      setTimeout(() => { try { inp.setSelectionRange(0, inp.value.length); } catch { inp.select(); } }, 0);
-    });
-    document.querySelectorAll('[data-del]').forEach(b => b.onclick = () => {
-      const i = +b.dataset.del;
-      if (b.dataset.confirm) { pf.stocks.splice(i, 1); $('#rows').innerHTML = rows(); bind(); }
-      else { b.dataset.confirm = 1; b.textContent = '確定刪除？'; }
-    });
+  const dirty = () => { DIRTY = true; $('#dirty').hidden = false; };
+  const acctOpts = sel => (validAcct(pf, sel) ? '' : '<option value="">（未分類）</option>') +
+    pf.accounts.map(a => `<option value="${a.id}" ${a.id === sel ? 'selected' : ''}>${esc(a.name)}</option>`).join('');
+
+  const holdRow = h => {
+    const p = posOf(h), open = OPEN === h.id;
+    return `<div class="hrow ${open ? 'open' : ''}" data-h="${h.id}">
+      <div class="hrow-top" data-toggle>
+        <div>${h.code ? `<b>${esc(h.name)}</b> <span class="muted small">${h.code}</span>` : '<b class="muted">新股票</b>'}</div>
+        <div class="small muted">${p.shares ? `${fmt0(p.shares)} 股・均價 ${fmt(p.cost)}` : p.rows.length ? '已出清' : '觀察中'} <span class="chev">${open ? '⌃' : '›'}</span></div>
+      </div>
+      ${open ? holdEditor(h, p) : ''}
+    </div>`;
   };
-  bind();
-  $('#add').onclick = () => { pf.stocks.push({ code: '', name: '', cost: null, shares: 0 }); $('#rows').innerHTML = rows(); bind(); $('#rows .hold-row:last-child [data-k=code]').focus(); };
-  loadStockList().then(() => document.querySelectorAll('.hold-row').forEach(r => { r.querySelector('.hint').innerHTML = stockHint(pf.stocks[+r.dataset.i]?.code); }));
+  const holdEditor = (h, p) => {
+    const side = SIDE_SEL || (p.rows.length ? 'buy' : 'init');
+    return `<div class="hedit">
+      ${!h.code ? `<div class="codewrap"><label>股票代號</label>
+        <input data-code inputmode="numeric" pattern="[0-9]*" autocomplete="off" autocorrect="off" spellcheck="false" placeholder="例：2330">
+        <div class="hint small muted"></div><div class="sugg" hidden></div></div>` : ''}
+      <div class="row small" style="margin:6px 0"><span>帳戶</span><select data-move>${acctOpts(h.account)}</select></div>
+      ${p.rows.length ? `<div class="hsum small">持有 <b>${fmt0(p.shares)}</b> 股・平均成本 <b>${fmt(p.cost)}</b>（含手續費）・已實現 <b class="${cls(p.realized)}">${sign(p.realized)}${fmt0(p.realized)}</b></div>
+      <div class="tlist">${p.rows.slice().reverse().map(t => `<div class="tl">
+        <span class="${t.side === 'sell' ? 'down' : t.side === 'buy' ? 'up' : ''}">${SIDE[t.side]}</span>
+        <span class="small">${t.side === 'init' ? '' : esc(t.date) + '　'}${fmt0(t.shares)} 股 @ ${fmt(t.price)}${t.side === 'sell' ? `　<b class="${cls(t.pl)}">${sign(t.pl)}${fmt0(t.pl)}</b>` : ''}</span>
+        <button class="mini" data-deltr="${t.id}">✕</button></div>`).join('')}</div>` : ''}
+      <div class="tform">
+        <div class="seg">${['init', 'buy', 'sell'].map(k => `<button type="button" data-side="${k}" class="${k === side ? 'primary' : ''}">${SIDE[k]}</button>`).join('')}</div>
+        <p class="small muted" style="margin:4px 0">${side === 'init' ? '已經持有的股票：填券商 App 上的平均成本與股數' : side === 'buy' ? '新買進一筆' : '賣出一筆（會自動算出這筆賺賠）'}</p>
+        <div class="grid2">
+          ${side !== 'init' ? `<div><label>日期</label><input type="date" id="t_date" value="${today()}"></div>` : ''}
+          <div><label>${side === 'init' ? '平均成本' : '成交價'}</label><input id="t_price" inputmode="decimal" class="num" placeholder="0"></div>
+          <div><label>股數</label><input id="t_shares" inputmode="numeric" pattern="[0-9]*" class="num" placeholder="0"></div>
+          ${side !== 'init' ? `<div><label>手續費</label><input id="t_fee" inputmode="numeric" pattern="[0-9]*" class="num" placeholder="自動"></div>` : ''}
+          ${side === 'sell' ? `<div><label>交易稅</label><input id="t_tax" inputmode="numeric" pattern="[0-9]*" class="num" placeholder="自動"></div>` : ''}
+        </div>
+        <div class="small muted" id="t_prev"></div>
+        <button class="primary" id="t_add" style="width:100%;margin-top:6px">加入這筆</button>
+      </div>
+      <div class="row" style="margin-top:10px"><button class="danger" data-delh>刪除這檔</button><button data-close>收合</button></div>
+    </div>`;
+  };
+
+  const renderHold = () => {
+    const groups = pf.accounts.map(a => ({ ...a, items: pf.holdings.filter(h => h.account === a.id) }));
+    const un = pf.holdings.filter(h => !validAcct(pf, h.account));
+    if (un.length || !pf.accounts.length) groups.push({ id: null, name: pf.accounts.length ? '未分類' : '我的持股', items: un });
+    $('#hold').innerHTML = groups.map(g => `<div class="acct" data-a="${g.id ?? ''}">
+      <div class="acct-h"><b>📁 ${esc(g.name)}</b><span class="muted small">${g.items.length} 檔</span>
+        ${g.id ? `<button class="mini" data-ren>改名</button>${g.items.length ? '' : '<button class="mini danger" data-delacct>刪除帳戶</button>'}` : ''}</div>
+      ${g.id === null && pf.accounts.length && un.length ? `<div class="row small moveall">把這 ${un.length} 檔全部移到 <select data-moveall>${pf.accounts.map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('')}</select><button class="mini primary" data-moveall-go>移動</button></div>` : ''}
+      ${g.items.map(holdRow).join('')}
+      ${g.id || !pf.accounts.length ? `<button class="addh" data-addh="${g.id ?? ''}">＋ 在「${esc(g.name)}」新增股票</button>` : ''}
+    </div>`).join('');
+    bindHold();
+  };
+
+  const bindHold = () => {
+    const root = $('#hold');
+    root.querySelectorAll('[data-toggle]').forEach(el => el.onclick = () => {
+      const id = el.parentElement.dataset.h; OPEN = OPEN === id ? null : id; SIDE_SEL = null; renderHold();
+      root.querySelector('.hrow.open')?.scrollIntoView({ block: 'nearest' });
+    });
+    root.querySelectorAll('[data-addh]').forEach(b => b.onclick = () => {
+      const h = { id: uid(), account: b.dataset.addh || null, code: '', name: '', trades: [] };
+      pf.holdings.push(h); OPEN = h.id; SIDE_SEL = null; dirty(); renderHold();
+      root.querySelector('.hrow.open [data-code]')?.focus();
+    });
+    root.querySelectorAll('[data-ren]').forEach(b => b.onclick = () => {
+      const a = pf.accounts.find(x => x.id === b.closest('.acct').dataset.a);
+      const hd = b.closest('.acct-h');
+      hd.innerHTML = `<input value="${esc(a.name)}" data-renin style="flex:1"><button class="mini primary" data-renok>確定</button>`;
+      const inp = hd.querySelector('input'); inp.focus(); inp.select();
+      hd.querySelector('[data-renok]').onclick = () => { if (inp.value.trim()) { a.name = inp.value.trim(); dirty(); } renderHold(); };
+    });
+    root.querySelectorAll('[data-delacct]').forEach(b => b.onclick = () => {
+      pf.accounts = pf.accounts.filter(x => x.id !== b.closest('.acct').dataset.a); dirty(); renderHold();
+    });
+    root.querySelector('[data-moveall-go]')?.addEventListener('click', () => {
+      const to = root.querySelector('[data-moveall]').value;
+      pf.holdings.forEach(h => { if (!validAcct(pf, h.account)) h.account = to; }); dirty(); renderHold();
+    });
+    const row = root.querySelector('.hrow.open');
+    if (!row) return;
+    const h = pf.holdings.find(x => x.id === row.dataset.h);
+    selectOnFocus(row);
+    const codeIn = row.querySelector('[data-code]');
+    if (codeIn) {
+      const wrap = row.querySelector('.codewrap');
+      codeIn.oninput = () => suggest(codeIn, wrap, x => {
+        if (pf.holdings.some(o => o !== h && o.code === x[0] && o.account === h.account)) {
+          wrap.querySelector('.hint').innerHTML += ' <span class="down">（這個帳戶已經有這檔，請直接點那檔加記錄）</span>'; return;
+        }
+        h.code = x[0]; h.name = x[1]; dirty(); renderHold(); $('#hold .hrow.open #t_price')?.focus();
+      });
+      codeIn.onblur = () => setTimeout(() => { const bx = wrap.querySelector('.sugg'); if (bx) bx.hidden = true; }, 200);
+    }
+    row.querySelector('[data-move]').onchange = e => { h.account = e.target.value || null; dirty(); renderHold(); };
+    row.querySelectorAll('[data-side]').forEach(b => b.onclick = () => { SIDE_SEL = b.dataset.side; renderHold(); });
+    row.querySelectorAll('[data-deltr]').forEach(b => b.onclick = () => {
+      if (!b.dataset.confirm) { b.dataset.confirm = 1; b.textContent = '確定刪除'; b.classList.add('danger'); return; }
+      h.trades = h.trades.filter(t => t.id !== b.dataset.deltr); dirty(); renderHold();
+    });
+    row.querySelector('[data-close]').onclick = () => { OPEN = null; renderHold(); };
+    row.querySelector('[data-delh]').onclick = e => {
+      const b = e.target;
+      if (!b.dataset.confirm) { b.dataset.confirm = 1; b.textContent = h.trades.length ? '確定刪除（含所有記錄）？' : '確定刪除？'; return; }
+      pf.holdings = pf.holdings.filter(x => x !== h); OPEN = null; dirty(); renderHold();
+    };
+    const side = SIDE_SEL || (posOf(h).rows.length ? 'buy' : 'init');
+    const val = id => { const el = row.querySelector('#' + id); return el && el.value !== '' ? Number(el.value) : null; };
+    const auto = () => {
+      const pr = val('t_price'), sh = val('t_shares');
+      if (!pr || !sh || side === 'init') { $('#t_prev').textContent = ''; return; }
+      const fee = val('t_fee') ?? calcFee(pr, sh, Number($('#disc').value) || set.fee_discount);
+      const tax = side === 'sell' ? (val('t_tax') ?? calcTax(h.code, pr, sh)) : 0;
+      if (row.querySelector('#t_fee')) row.querySelector('#t_fee').placeholder = '自動 ' + fee;
+      if (row.querySelector('#t_tax')) row.querySelector('#t_tax').placeholder = '自動 ' + tax;
+      const amt = pr * sh;
+      $('#t_prev').innerHTML = side === 'buy' ? `成交金額 ${fmt0(amt)}＋手續費 ${fmt0(fee)}＝應付 <b>${fmt0(amt + fee)}</b>`
+        : `成交金額 ${fmt0(amt)}－手續費 ${fmt0(fee)}－交易稅 ${fmt0(tax)}＝應收 <b>${fmt0(amt - fee - tax)}</b>`;
+    };
+    row.querySelectorAll('.tform input').forEach(i => i.addEventListener('input', auto));
+    row.querySelector('#t_add').onclick = () => {
+      if (!h.code) return toast('請先輸入股票代號');
+      const pr = val('t_price'), sh = val('t_shares');
+      if (!pr || !sh || sh <= 0) return toast('請填價格與股數');
+      const p = posOf(h);
+      if (side === 'sell' && sh > p.shares) return toast(`賣出股數超過持有（目前 ${fmt0(p.shares)} 股）`);
+      const disc = Number($('#disc').value) || set.fee_discount;
+      const t = { id: uid(), side, date: side === 'init' ? '' : (row.querySelector('#t_date').value || today()), price: pr, shares: sh,
+        fee: side === 'init' ? 0 : (val('t_fee') ?? calcFee(pr, sh, disc)),
+        tax: side === 'sell' ? (val('t_tax') ?? calcTax(h.code, pr, sh)) : 0 };
+      h.trades.push(t); SIDE_SEL = side === 'init' ? 'buy' : side; dirty(); renderHold();
+      toast(`已加入：${SIDE[side]} ${fmt0(sh)} 股（記得按「儲存並更新」）`);
+    };
+  };
+  renderHold();
+  selectOnFocus(app);
+
+  $('#addacct').onclick = () => {
+    const n = $('#newacct').value.trim(); if (!n) return toast('請輸入帳戶名稱');
+    pf.accounts.push({ id: uid(), name: n }); $('#newacct').value = ''; dirty(); renderHold();
+  };
+  ['stop', 'nd', 'disc'].forEach(id => $('#' + id).addEventListener('input', dirty));
+  loadStockList();
   $('#save').onclick = async () => {
     if (needGh()) return;
-    pf.stocks = pf.stocks.filter(s => /^\d{4,6}[A-Z]?$/.test(s.code));
-    pf.stocks.forEach(s => { s.shares = s.shares || 0; if (!s.cost) s.cost = null; });
     set.stop_pct = Number($('#stop').value) || 8;
     set.notify_days_before = Number($('#nd').value) || 7;
+    set.fee_discount = Number($('#disc').value) || 10;
+    const out = finalizePf(structuredClone(pf));
     const btn = $('#save'); btn.disabled = true; btn.textContent = '儲存中…';
     try {
       const cur = await gh.getJson('config/portfolio.enc');
-      await gh.putJson('config/portfolio.enc', await encryptBox(pf, getPw()), cur.sha, '更新持股');
+      await gh.putJson('config/portfolio.enc', await encryptBox(out, getPw()), cur.sha, '更新持股');
       await gh.dispatch();
-      REPORT.portfolio = pf;
-      toast('已儲存，雲端分析中，約 2～3 分鐘後下拉重新整理');
+      REPORT.portfolio = out; DRAFT = null; DIRTY = false;
+      $('#dirty').hidden = true;
+      toast('✅ 已儲存，雲端分析中，約 3～5 分鐘後自動更新');
       waitForUpdate();
     } catch (e) { toast('儲存失敗：' + e.message, 5000); }
     btn.disabled = false; btn.textContent = '儲存並更新';
   };
+  if (DIRTY) dirty();
   $('#savegh').onclick = () => { store.set('gh_repo', $('#repo').value.trim()); store.set('gh_token', $('#tok').value.trim()); toast('已儲存'); };
   $('#refresh').onclick = async () => {
     if (needGh()) return;
-    try { await gh.dispatch(); toast('已觸發更新，約 2～3 分鐘完成'); waitForUpdate(); } catch (e) { toast(e.message, 5000); }
+    try { await gh.dispatch(); toast('已觸發更新，約 3～5 分鐘完成，不用重複按'); waitForUpdate(); } catch (e) { toast(e.message, 5000); }
   };
   $('#push').onclick = () => enablePush().catch(e => toast('開啟失敗：' + e.message, 5000));
   $('#testpush').onclick = async () => {
@@ -628,7 +906,7 @@ function viewSettings() {
     if (Notification.permission !== 'granted' || !reg) return toast('請先開啟通知');
     reg.showNotification('持股雷達測試', { body: '通知正常運作！點我打開台積電', data: { url: './#/stock/2330' }, icon: 'icon-192.png' });
   };
-  $('#logout').onclick = () => { store.set('pw', null); sessionStorage.clear(); REPORT = null; route(); };
+  $('#logout').onclick = () => { store.set('pw', null); sessionStorage.clear(); REPORT = null; DRAFT = null; route(); };
 }
 
 function urlB64ToU8(s) {
@@ -660,7 +938,7 @@ async function waitForUpdate() {
     await new Promise(r => setTimeout(r, 15000));
     try {
       const r = await loadReport(getPw());
-      if (r.generated !== before) { REPORT = r; toast('✅ 資料已更新'); route(); return; }
+      if (r.generated !== before) { REPORT = r; toast('✅ 資料已更新'); if (!location.hash.includes('settings') || !DIRTY) { DRAFT = null; route(); } return; }
     } catch {}
   }
 }
@@ -686,7 +964,7 @@ async function route() {
   $('#updated').textContent = '更新於 ' + REPORT.generated;
   const h = CUR_HASH.replace(/^#\/?/, '');
   const isStock = h.startsWith('stock/');
-  const tab = h.startsWith('events') ? 'events' : h.startsWith('settings') ? 'settings' : 'home';
+  const tab = h.startsWith('events') ? 'events' : h.startsWith('settings') ? 'settings' : h.startsWith('trades') ? 'trades' : 'home';
   if (isStock) {
     const prevIsStock = prev && prev.includes('stock/');
     if (!prevIsStock) FROM_LIST = prev != null && !prev.includes('settings');
@@ -696,7 +974,7 @@ async function route() {
   document.querySelectorAll('.tabbar a').forEach(a => a.classList.toggle('on', !isStock && a.dataset.tab === tab));
   if (isStock) { viewStock(h.slice(6)); window.scrollTo(0, 0); }
   else {
-    if (tab === 'events') viewEvents(); else if (tab === 'settings') viewSettings(); else viewHome();
+    if (tab === 'events') viewEvents(); else if (tab === 'settings') viewSettings(); else if (tab === 'trades') viewTrades(); else viewHome();
     window.scrollTo(0, SCROLL[CUR_HASH] || 0);
   }
 }
@@ -714,7 +992,7 @@ document.addEventListener('touchend', e => {
 // 從背景回來時自動抓最新資料
 document.addEventListener('visibilitychange', async () => {
   if (document.visibilityState !== 'visible' || !REPORT) return;
-  try { const r = await loadReport(getPw()); if (r.generated !== REPORT.generated) { REPORT = r; route(); } } catch {}
+  try { const r = await loadReport(getPw()); if (r.generated !== REPORT.generated) { REPORT = r; if (!location.hash.includes('settings')) route(); } } catch {}
 });
 navigator.serviceWorker?.addEventListener('message', e => { if (e.data?.url) location.href = e.data.url; });
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js');

@@ -202,3 +202,35 @@ details summary { cursor: pointer; color: var(--text2); font-size: 13px; }
 .hold-row { padding-bottom: 10px; border-bottom: 1px dashed var(--line); }
 .hold-row > :nth-child(n+3) { order: 2; }
 .hold-row > .hint, .hold-row > .sugg { order: 1; }
+
+/* ---- 帳戶與進出記錄 ---- */
+.acct-chips { margin-bottom: 10px; }
+.grp-h { display: flex; justify-content: space-between; align-items: baseline; margin: 18px 4px 8px; }
+.grp-h h3 { margin: 0; }
+.acct { border: 1px solid var(--line); border-radius: 12px; padding: 10px; margin-bottom: 12px; }
+.acct-h { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; }
+.acct-h b { flex: 1; }
+.moveall { gap: 6px; flex-wrap: wrap; justify-content: flex-start; margin-bottom: 8px; }
+.moveall select { width: auto; flex: 1; }
+button.mini { padding: 4px 10px; font-size: 12px; min-height: 0; }
+.hrow { border-top: 1px solid var(--line); }
+.hrow-top { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 10px 2px; cursor: pointer; }
+.hrow.open .hrow-top { color: var(--accent, inherit); }
+.chev { display: inline-block; width: 14px; text-align: center; font-weight: 700; }
+.hedit { padding: 0 2px 12px; }
+.hedit select { width: auto; flex: 1; margin-left: 8px; }
+.hsum { background: var(--bg); border-radius: 8px; padding: 8px 10px; margin: 6px 0; }
+.tlist .tl { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px dashed var(--line); }
+.tlist .tl span:nth-child(2) { flex: 1; }
+.tform { margin-top: 10px; }
+.tform .seg { margin: 0; }
+.addh { width: 100%; margin-top: 8px; border-style: dashed; }
+.addacct { display: flex; gap: 8px; margin-top: 4px; }
+.addacct input { flex: 1; }
+.trade { display: flex; gap: 10px; align-items: flex-start; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.trade:last-child { border-bottom: 0; }
+.tside { min-width: 52px; font-weight: 700; font-size: 13px; padding-top: 1px; }
+.tmain { flex: 1; min-width: 0; }
+.tmain .tag { margin-left: 2px; }
+.tpl { text-align: right; min-width: 70px; }
+table.pos td, table.pos th { white-space: nowrap; }
