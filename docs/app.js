@@ -282,8 +282,8 @@ function viewStock(code) {
   <div class="card news"><h3>可信新聞 <span class="muted small">近 7 天・已過濾 ${Object.values(s.news_dropped || {}).reduce((a, b) => a + b, 0)} 則</span></h3>
     ${(s.news || []).map(n => `<a href="${esc(n.url)}" target="_blank" rel="noopener">
       <div class="nt">${esc(n.title)}</div>
-      <div class="nm">${n.important ? '<span class="tag imp">重要</span>' : ''}${n.tone === '正面' ? '<span class="tag pos">正面</span>' : n.tone === '負面' ? '<span class="tag neg">負面</span>' : ''}${n.cats.map(x => `<span class="tag">${esc(x)}</span>`).join('')}
-      ${esc(n.source)}・${new Date(n.ts * 1000).toLocaleString('zh-TW', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</div></a>`).join('') || '<p class="muted">近 7 天沒有可信來源的重要新聞</p>'}
+      <div class="nm">${n.important ? '<span class="tag imp">重要</span>' : ''}${n.tone === '正面' ? '<span class="tag pos">正面</span>' : n.tone === '負面' ? '<span class="tag neg">負面</span>' : ''}${n.cats.map(x => `<span class="tag">${esc(x)}</span>`).join('')}</div>
+      <div class="ns">📰 ${esc(n.source || '來源不明')}　🕒 ${newsTime(n.ts)}</div></a>`).join('') || '<p class="muted">近 7 天沒有可信來源的重要新聞</p>'}
     <details><summary>過濾掉的新聞統計</summary><p class="small muted">${Object.entries(s.news_dropped || {}).map(([k, n]) => `${esc(k)} ${n} 則`).join('、')}</p></details>
   </div>
 
@@ -517,15 +517,23 @@ function suggest(inp, pf) {
     if (dup) row.querySelector('.hint').innerHTML += ' <span class="down">（清單裡已經有這檔）</span>';
   };
   const exact = STOCK_MAP[q];
-  if (exact) fill(exact); else row.querySelector('.hint').innerHTML = stockHint(q);
+  // 代號完全正確：自動帶入名稱、收起建議、直接跳到「平均成本」
+  if (exact) { fill(exact); box.hidden = true; box.innerHTML = ''; row.querySelector('[data-k=cost]').focus(); return; }
+  row.querySelector('.hint').innerHTML = stockHint(q);
   const list = !q || !STOCKS ? [] : STOCKS.filter(x => x[0].startsWith(q) || (!/^\d/.test(q) && x[1].toUpperCase().includes(q))).slice(0, 8);
-  if (exact && list.length <= 1) { box.hidden = true; return; }
   box.innerHTML = list.map(x => `<button type="button" data-c="${x[0]}"><b>${x[0]}</b> ${esc(x[1])} <small class="muted">${x[2]}・${esc(x[3])}</small></button>`).join('');
   box.hidden = !list.length;
-  box.querySelectorAll('button').forEach(b => b.onmousedown = b.ontouchstart = e => {
-    e.preventDefault(); fill(STOCK_MAP[b.dataset.c]); box.hidden = true;
+  box.querySelectorAll('button').forEach(b => b.onpointerdown = e => {
+    e.preventDefault(); fill(STOCK_MAP[b.dataset.c]); box.hidden = true; box.innerHTML = '';
     row.querySelector('[data-k=cost]').focus();
   });
+}
+
+function newsTime(ts) {
+  const d = new Date(ts * 1000), p = n => String(n).padStart(2, '0');
+  const h = (Date.now() - d) / 3600e3;
+  const ago = h < 1 ? '剛剛' : h < 24 ? `${Math.floor(h)} 小時前` : `${Math.floor(h / 24)} 天前`;
+  return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日（${'日一二三四五六'[d.getDay()]}）${p(d.getHours())}:${p(d.getMinutes())}・${ago}`;
 }
 
 // ---------- 設定 ----------
@@ -533,10 +541,10 @@ function viewSettings() {
   const pf = structuredClone(REPORT.portfolio);
   const set = pf.settings || (pf.settings = { stop_pct: 8, notify_days_before: 7 });
   const rows = () => pf.stocks.map((s, i) => `<div class="hold-row" data-i="${i}">
-      <div><label>代號或名稱</label><input data-k="code" value="${esc(s.code)}" autocomplete="off" autocorrect="off" spellcheck="false" placeholder="例：2330 或 台積"></div>
+      <div><label>股票代號</label><input data-k="code" value="${esc(s.code)}" inputmode="numeric" pattern="[0-9]*" autocomplete="off" autocorrect="off" spellcheck="false" placeholder="例：2330"></div>
       <div><label>名稱</label><input data-k="name" value="${esc(s.name || '')}"></div>
-      <div><label>平均成本</label><input data-k="cost" value="${s.cost ?? ''}" inputmode="decimal"></div>
-      <div><label>股數</label><input data-k="shares" value="${s.shares ?? ''}" inputmode="numeric"></div>
+      <div><label>平均成本</label><input data-k="cost" value="${s.cost || ''}" inputmode="decimal" placeholder="0"></div>
+      <div><label>股數</label><input data-k="shares" value="${s.shares || ''}" inputmode="numeric" pattern="[0-9]*" placeholder="0"></div>
       <button class="danger" data-del="${i}">刪除</button>
       <div class="hint small muted">${stockHint(s.code)}</div>
       <div class="sugg" hidden></div></div>`).join('');
@@ -550,8 +558,8 @@ function viewSettings() {
   </div>
   <div class="card"><h3>警示設定</h3>
     <div class="grid2">
-      <div><label>停損比例（%）</label><input id="stop" value="${set.stop_pct}" inputmode="decimal"></div>
-      <div><label>事件提前幾天通知</label><input id="nd" value="${set.notify_days_before}" inputmode="numeric"></div>
+      <div><label>停損比例（%）</label><input id="stop" value="${set.stop_pct}" inputmode="decimal" class="num"></div>
+      <div><label>事件提前幾天通知</label><input id="nd" value="${set.notify_days_before}" inputmode="numeric" pattern="[0-9]*" class="num"></div>
     </div>
   </div>
   <div class="card"><h3>通知</h3>
@@ -578,6 +586,11 @@ function viewSettings() {
     document.querySelectorAll('.hold-row [data-k=code]').forEach(inp => inp.onblur = () => setTimeout(() => {
       const box = inp.closest('.hold-row')?.querySelector('.sugg'); if (box) box.hidden = true;
     }, 200));
+    // 數字欄位：點進去時整格選取，直接打新數字就會取代，不用先刪掉 0
+    document.querySelectorAll('.hold-row [data-k=cost], .hold-row [data-k=shares], input.num').forEach(inp => inp.onfocus = () => {
+      if (inp.value === '0') inp.value = '';
+      setTimeout(() => { try { inp.setSelectionRange(0, inp.value.length); } catch { inp.select(); } }, 0);
+    });
     document.querySelectorAll('[data-del]').forEach(b => b.onclick = () => {
       const i = +b.dataset.del;
       if (b.dataset.confirm) { pf.stocks.splice(i, 1); $('#rows').innerHTML = rows(); bind(); }
@@ -590,6 +603,7 @@ function viewSettings() {
   $('#save').onclick = async () => {
     if (needGh()) return;
     pf.stocks = pf.stocks.filter(s => /^\d{4,6}[A-Z]?$/.test(s.code));
+    pf.stocks.forEach(s => { s.shares = s.shares || 0; if (!s.cost) s.cost = null; });
     set.stop_pct = Number($('#stop').value) || 8;
     set.notify_days_before = Number($('#nd').value) || 7;
     const btn = $('#save'); btn.disabled = true; btn.textContent = '儲存中…';

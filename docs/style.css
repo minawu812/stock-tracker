@@ -1,3 +1,4 @@
+[hidden] { display: none !important; }
 :root {
   color-scheme: light;
   --bg: #f4f4f2;
@@ -134,6 +135,8 @@ th { color: var(--muted); font-weight: 500; font-size: 12px; }
 .news a:last-child { border-bottom: 0; }
 .news .nt { font-size: 14px; font-weight: 500; }
 .news .nm { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.news .ns { font-size: 12px; color: var(--muted); margin-top: 3px; }
+.news .nm:empty { display: none; }
 .tag { display: inline-block; font-size: 11px; padding: 0 6px; border-radius: 4px; background: var(--line); color: var(--text2); margin-right: 4px; }
 .tag.imp { background: var(--warn-bg); color: var(--warn); font-weight: 600; }
 .tag.pos { background: var(--up-bg); color: var(--up); }

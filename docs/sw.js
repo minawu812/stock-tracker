@@ -1,5 +1,5 @@
 /* Service Worker：離線快取 + 推播通知 */
-const CACHE = 'radar-v3';
+const CACHE = 'radar-v4';
 const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'config.js', 'manifest.webmanifest', 'icon-192.png'];
 
 self.addEventListener('install', e => {
